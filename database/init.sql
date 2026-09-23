@@ -5,7 +5,6 @@ CREATE TABLE IF NOT EXISTS chunks (
     document_id BIGINT NOT NULL,
     filename TEXT NOT NULL,
     page INT,
-    section TEXT,
     content TEXT NOT NULL,
     embedding VECTOR(1024) NOT NULL
 );
