@@ -8,8 +8,8 @@ from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "BAAI/bge-m3"
 
-INPUT_FILE = "chunks.json"
-OUTPUT_FILE = "embedded_chunks.json"
+INPUT_FILE = "backend/output/chunks.json"
+OUTPUT_FILE = "backend/output/embedded_chunks.json"
 
 BATCH_SIZE = 16
 
