@@ -2,35 +2,34 @@ import json
 from pathlib import Path
 
 import psycopg
-from pgvector import Vector
 from pgvector.psycopg import register_vector
+from pgvector import Vector
 
 
 DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/rag"
 
-# backend/retrieval/import_embeddings.py
-# parents[0] = retrieval
-# parents[1] = backend
-BASE_DIR = Path(__file__).resolve().parents[1]
+INPUT_FILE = (
+    Path(__file__).resolve().parents[1]
+    / "output"
+    / "embedded_chunks.json"
+)
 
-INPUT_FILE = BASE_DIR / "output" / "embedded_chunks.json"
 
-
-def load_embeddings():
+def load_chunks():
     if not INPUT_FILE.exists():
         raise FileNotFoundError(
             f"Файл не найден: {INPUT_FILE}"
         )
 
     with open(INPUT_FILE, "r", encoding="utf-8") as file:
-        data = json.load(file)
+        chunks = json.load(file)
 
-    if not isinstance(data, list):
+    if not isinstance(chunks, list):
         raise ValueError(
-            "JSON должен содержать список chunks."
+            "embedded_chunks.json должен содержать список"
         )
 
-    return data
+    return chunks
 
 
 def validate_chunk(chunk, index):
@@ -44,13 +43,14 @@ def validate_chunk(chunk, index):
     for field in required_fields:
         if field not in chunk:
             raise ValueError(
-                f"Chunk #{index} не содержит поле '{field}'."
+                f"Chunk #{index} не содержит поле '{field}'"
             )
 
     if len(chunk["embedding"]) != 1024:
         raise ValueError(
-            f"Chunk #{index}: embedding имеет размер "
-            f"{len(chunk['embedding'])}, ожидалось 1024."
+            f"Chunk #{index}: embedding имеет "
+            f"{len(chunk['embedding'])} измерений, "
+            f"а ожидалось 1024"
         )
 
 
@@ -59,10 +59,9 @@ def insert_chunks(chunks):
         register_vector(conn)
 
         with conn.cursor() as cursor:
+
             for index, chunk in enumerate(chunks):
                 validate_chunk(chunk, index)
-
-                embedding = Vector(chunk["embedding"])
 
                 cursor.execute(
                     """
@@ -70,19 +69,17 @@ def insert_chunks(chunks):
                         document_id,
                         filename,
                         page,
-                        section,
                         content,
                         embedding
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     (
                         chunk["document_id"],
                         chunk["filename"],
                         chunk.get("page"),
-                        chunk.get("section"),
                         chunk["content"],
-                        embedding
+                        Vector(chunk["embedding"])
                     )
                 )
 
@@ -97,9 +94,9 @@ def insert_chunks(chunks):
 def main():
     print(f"Loading: {INPUT_FILE}")
 
-    chunks = load_embeddings()
+    chunks = load_chunks()
 
-    print(f"Chunks loaded: {len(chunks)}")
+    print(f"Loaded chunks: {len(chunks)}")
 
     insert_chunks(chunks)
 
