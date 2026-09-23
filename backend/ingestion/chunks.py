@@ -105,12 +105,10 @@ def create_chunks(documents):
         for chunk in text_chunks:
 
             chunks.append({
-                "metadata": {
-                    "document_id": document["document_id"],
-                    "filename": document["filename"],
-                    "page": document["page"],
-                    "section": None
-                },
+                "document_id": document["document_id"],
+                "filename": document["filename"],
+                "page": document["page"],
+                "section": None,
                 "content": chunk
             })
 
