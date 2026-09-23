@@ -243,8 +243,7 @@ def create_chunks_from_content(
     document_id,
     filename,
     page,
-    content,
-    content_type
+    content
 ):
 
     chunks = []
@@ -262,7 +261,6 @@ def create_chunks_from_content(
             "document_id": document_id,
             "filename": filename,
             "page": page,
-            "content_type": content_type,
             "content": chunk
         })
 
@@ -321,8 +319,7 @@ def process_pdf(
                         document_id=document_id,
                         filename=filename,
                         page=page_number,
-                        content=text,
-                        content_type="ocr"
+                        content=text
                     )
                 )
 
@@ -337,8 +334,7 @@ def process_pdf(
                     document_id=document_id,
                     filename=filename,
                     page=page_number,
-                    content=text,
-                    content_type="text"
+                    content=text
                 )
             )
 
@@ -354,8 +350,7 @@ def process_pdf(
                 document_id=document_id,
                 filename=filename,
                 page=page_number,
-                content=table["text"],
-                content_type="table"
+                content=table["text"]
             )
 
             chunks.extend(table_chunks)
@@ -395,8 +390,7 @@ def process_txt(
             document_id=document_id,
             filename=filename,
             page=None,
-            content=text,
-            content_type="text"
+            content=text
         )
     )
 
@@ -523,25 +517,6 @@ with open(
 # Статистика
 # ------------------------------------------------------------
 
-text_count = sum(
-    1
-    for chunk in chunks
-    if chunk["content_type"] == "text"
-)
-
-ocr_count = sum(
-    1
-    for chunk in chunks
-    if chunk["content_type"] == "ocr"
-)
-
-table_count = sum(
-    1
-    for chunk in chunks
-    if chunk["content_type"] == "table"
-)
-
-
 print("\n" + "=" * 50)
 
 print(
@@ -550,18 +525,6 @@ print(
 
 print(
     f"Всего чанков: {len(chunks)}"
-)
-
-print(
-    f"Обычный текст: {text_count}"
-)
-
-print(
-    f"OCR: {ocr_count}"
-)
-
-print(
-    f"Таблицы: {table_count}"
 )
 
 print("=" * 50)
