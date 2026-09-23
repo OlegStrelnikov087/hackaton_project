@@ -1,15 +1,14 @@
 import os
-import re
-import pandas as pd
 import json
+from pathlib import Path
 
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import pandas as pd
+import pymupdf
+
 
 def load_documents(folder_path):
 
     documents = []
-
     document_id = 1
 
     for filename in os.listdir(folder_path):
@@ -18,7 +17,7 @@ def load_documents(folder_path):
 
         if filename.lower().endswith(".pdf"):
 
-            pdf = fitz.open(file_path)
+            pdf = pymupdf.open(file_path)
 
             for page_number, page in enumerate(pdf):
 
@@ -51,6 +50,7 @@ def load_documents(folder_path):
 
     return documents
 
+
 def clean_documents(documents):
 
     df = pd.DataFrame(documents)
@@ -73,6 +73,7 @@ def clean_documents(documents):
     df = df[df["text"].str.len() > 0]
 
     return df.to_dict("records")
+
 
 def split_text(text, chunk_size=500, chunk_overlap=150):
 
@@ -104,25 +105,47 @@ def create_chunks(documents):
         for chunk in text_chunks:
 
             chunks.append({
-                "document_id": document["document_id"],
-                "filename": document["filename"],
-                "page": document["page"],
-                "section": None,
+                "metadata": {
+                    "document_id": document["document_id"],
+                    "filename": document["filename"],
+                    "page": document["page"],
+                    "section": None
+                },
                 "content": chunk
             })
 
     return chunks
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-output_dir = BASE_DIR / "output"
 
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+documents_dir = BASE_DIR / "documents"
+
+output_dir = BASE_DIR / "output"
 output_dir.mkdir(exist_ok=True)
 
 output_file = output_dir / "chunks.json"
 
+
+# 1. Загружаем документы
+documents = load_documents(documents_dir)
+
+
+# 2. Очищаем текст
+documents = clean_documents(documents)
+
+
+# 3. Создаём чанки
+chunks = create_chunks(documents)
+
+
+# 4. Сохраняем JSON
 with open(output_file, "w", encoding="utf-8") as f:
     json.dump(chunks, f, ensure_ascii=False, indent=4)
 
-print(f"JSON сохранён: {output_file}")
 
-print(json.dumps(chunks, ensure_ascii=False, indent=4))
+print(f"JSON сохранён: {output_file}")
