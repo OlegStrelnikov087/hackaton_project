@@ -18,7 +18,7 @@ __pycache__/
 !.env.example
 
 # Generated files
-output/
+# output/
 *.log
 
 # OS
