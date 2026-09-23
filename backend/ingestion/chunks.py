@@ -108,7 +108,6 @@ def create_chunks(documents):
                 "document_id": document["document_id"],
                 "filename": document["filename"],
                 "page": document["page"],
-                "section": None,
                 "content": chunk
             })
 
