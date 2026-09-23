@@ -1,7 +1,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg17
-
+ 
     container_name: rag-postgres
 
     environment:
