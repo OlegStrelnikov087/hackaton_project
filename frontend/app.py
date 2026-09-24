@@ -30,6 +30,71 @@ st.caption(
 
 
 # ==========================================================
+# PROGRESS BAR STYLE
+# ==========================================================
+
+st.markdown(
+    """
+    <style>
+    .rag-progress {
+        width: 100%;
+        height: 10px;
+        background: #e6e6e6;
+        border-radius: 999px;
+        overflow: hidden;
+        margin: 8px 0 14px 0;
+    }
+
+    .rag-progress-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(
+            110deg,
+            #1f9cff 0%,
+            #67c4ff 35%,
+            #ffffff 50%,
+            #67c4ff 65%,
+            #1f9cff 100%
+        );
+        background-size: 200% 100%;
+        animation: rag-shimmer 1.4s linear infinite;
+        transition: width 0.35s ease;
+    }
+
+    @keyframes rag-shimmer {
+        from {
+            background-position: 200% 0;
+        }
+        to {
+            background-position: -200% 0;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def render_progress(container, percent, message):
+    percent = max(0, min(100, int(percent)))
+
+    container.markdown(
+        f"""
+        <div style="font-weight: 600; margin-bottom: 6px;">
+            {message}
+        </div>
+        <div class="rag-progress">
+            <div
+                class="rag-progress-fill"
+                style="width: {percent}%;">
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ==========================================================
 # DOCUMENTS
 # ==========================================================
 
@@ -131,22 +196,20 @@ if query:
 
         st.markdown("Обработка запроса")
 
-        progress_bar = st.progress(
-            0,
-            text="Начинаю обработку...",
-        )
-
-        process_text = st.empty()
+        progress_container = st.empty()
 
         def update_progress(percent, message):
-            progress_bar.progress(
+            render_progress(
+                progress_container,
                 percent,
-                text=message,
+                message,
             )
 
-            process_text.markdown(
-                f"**{message}**"
-            )
+        render_progress(
+            progress_container,
+            0,
+            "Начинаю обработку...",
+        )
 
         try:
             answer, results = search(
@@ -157,19 +220,14 @@ if query:
             )
 
         except Exception as error:
-            progress_bar.empty()
-            process_text.empty()
-
+            progress_container.empty()
             st.error(str(error))
             st.stop()
 
-        progress_bar.progress(
+        render_progress(
+            progress_container,
             100,
-            text="Готово.",
-        )
-
-        process_text.markdown(
-            "**Ответ сформирован.**"
+            "Готово.",
         )
 
         st.divider()
