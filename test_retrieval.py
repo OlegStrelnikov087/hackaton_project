@@ -1,61 +1,61 @@
+import json
+from pathlib import Path
+
+import numpy as np
+
 from backend.retrieval.embedding import EmbeddingService
 
-import psycopg
-from pgvector import Vector
-from pgvector.psycopg import register_vector
+
+INPUT_FILE = Path("backend/output/embedded_chunks.json")
 
 
-DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/rag"
+def load_chunks():
+    with open(INPUT_FILE, "r", encoding="utf-8") as file:
+        return json.load(file)
 
-embedder = EmbeddingService("BAAI/bge-m3")
+
+def cosine_similarity(a, b):
+    a = np.array(a)
+    b = np.array(b)
+
+    return np.dot(a, b) / (
+        np.linalg.norm(a) * np.linalg.norm(b)
+    )
 
 
 def search(query: str, top_k: int = 5):
-    # Превращаем запрос пользователя в embedding
+    chunks = load_chunks()
+
+    embedder = EmbeddingService("BAAI/bge-m3")
+
+    # Делаем embedding только пользовательского запроса
     query_embedding = embedder.embed_query(query)
-    query_vector = Vector(query_embedding)
 
-    # Подключаемся к PostgreSQL
-    with psycopg.connect(DATABASE_URL) as conn:
-        register_vector(conn)
+    results = []
 
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    document_id,
-                    filename,
-                    page,
-                    content,
-                    1 - (embedding <=> %s) AS similarity
-                FROM chunks
-                ORDER BY embedding <=> %s
-                LIMIT %s
-                """,
-                (
-                    query_vector,
-                    query_vector,
-                    top_k
-                )
-            )
+    for chunk in chunks:
+        similarity = cosine_similarity(
+            query_embedding,
+            chunk["embedding"]
+        )
 
-            rows = cursor.fetchall()
+        results.append({
+            "document_id": chunk["document_id"],
+            "filename": chunk["filename"],
+            "page": chunk.get("page"),
+            "content": chunk["content"],
+            "similarity": float(similarity)
+        })
 
-    return [
-        {
-            "id": row[0],
-            "document_id": row[1],
-            "filename": row[2],
-            "page": row[3],
-            "content": row[4],
-            "similarity": float(row[5])
-        }
-        for row in rows
-    ]
+    results.sort(
+        key=lambda x: x["similarity"],
+        reverse=True
+    )
+
+    return results[:top_k]
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  
     query = input("Введите запрос: ")
 
     results = search(query, top_k=5)
@@ -64,8 +64,8 @@ if __name__ == "__main__":
 
     for i, result in enumerate(results, 1):
         print(f"--- #{i} ---")
-        print(f"Файл: {result['filename']}")
-        print(f"Страница: {result['page']}")
-        print(f"Similarity: {result['similarity']:.4f}")
-        print(f"Текст: {result['content']}")
+        print("File:", result["filename"])
+        print("Page:", result["page"])
+        print("Similarity:", f"{result['similarity']:.4f}")
+        print("Content:", result["content"][:500])
         print()

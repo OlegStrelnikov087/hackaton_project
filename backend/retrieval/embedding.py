@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
+import os
 
 import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
 
+
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 MODEL_NAME = "BAAI/bge-m3"
 
