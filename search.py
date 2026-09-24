@@ -1,36 +1,80 @@
 import gc
+import importlib.util
+from pathlib import Path
 
-import torch
 import psycopg
+import torch
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 
-from backend.retrieval.embedding import EmbeddingService
-from backend.retrieval.reranker import Reranker
-from backend.llm.llm import LocalLLM
 
-
-# =========================
-# CONFIG
-# =========================
-
-DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/rag"
+PROJECT_ROOT = Path(__file__).resolve().parent
+BACKEND_DIR = PROJECT_ROOT / "backend"
 
 EMBEDDING_MODEL = "BAAI/bge-m3"
+RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+LLM_MODEL = "qwen3:4b-instruct"
 
 VECTOR_TOP_K = 30
 FINAL_TOP_K = 5
 
 
-# =========================
-# MEMORY CLEANUP
-# =========================
+def load_class_from_backend(filename: str, class_name: str):
+    matches = list(BACKEND_DIR.rglob(filename))
+
+    if not matches:
+        raise ModuleNotFoundError(
+            f"Не найден файл '{filename}' внутри '{BACKEND_DIR}'."
+        )
+
+    module_path = matches[0]
+
+    spec = importlib.util.spec_from_file_location(
+        f"_rag_{filename.replace('.py', '')}",
+        module_path,
+    )
+
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            f"Не удалось загрузить модуль: {module_path}"
+        )
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, class_name):
+        raise ImportError(
+            f"В файле '{module_path}' нет класса '{class_name}'."
+        )
+
+    return getattr(module, class_name)
+
+
+EmbeddingService = load_class_from_backend(
+    "embedding.py",
+    "EmbeddingService",
+)
+
+Reranker = load_class_from_backend(
+    "reranker.py",
+    "Reranker",
+)
+
+LocalLLM = load_class_from_backend(
+    "llm.py",
+    "LocalLLM",
+)
+
+
+DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/rag"
+
+
+def progress(callback, percent, message):
+    if callback is not None:
+        callback(percent, message)
+
 
 def free_memory():
-    """
-    Освобождает память после работы модели.
-    """
-
     gc.collect()
 
     if torch.cuda.is_available():
@@ -38,21 +82,15 @@ def free_memory():
         torch.cuda.ipc_collect()
 
 
-# =========================
-# VECTOR SEARCH
-# =========================
+def vector_search(query_embedding, top_k=30):
+    conn = psycopg.connect(DATABASE_URL)
 
-def vector_search(
-    query_embedding: list[float],
-    top_k: int = VECTOR_TOP_K
-) -> list[dict]:
-
-    query_vector = Vector(query_embedding)
-
-    with psycopg.connect(DATABASE_URL) as conn:
+    try:
         register_vector(conn)
 
         with conn.cursor() as cursor:
+            query_vector = Vector(query_embedding)
+
             cursor.execute(
                 """
                 SELECT
@@ -60,261 +98,201 @@ def vector_search(
                     document_id,
                     filename,
                     page,
-                    content,
-                    1 - (embedding <=> %s) AS similarity
+                    content
                 FROM chunks
                 ORDER BY embedding <=> %s
                 LIMIT %s
                 """,
                 (
                     query_vector,
-                    query_vector,
-                    top_k
-                )
+                    top_k,
+                ),
             )
 
             rows = cursor.fetchall()
 
-    results = []
+            return [
+                {
+                    "id": row[0],
+                    "document_id": row[1],
+                    "filename": row[2],
+                    "page": row[3],
+                    "content": row[4],
+                }
+                for row in rows
+            ]
 
-    for row in rows:
-        results.append(
-            {
-                "id": row[0],
-                "document_id": row[1],
-                "filename": row[2],
-                "page": row[3],
-                "content": row[4],
-                "vector_score": float(row[5])
-            }
-        )
-
-    return results
+    finally:
+        conn.close()
 
 
-# =========================
-# EMBEDDING
-# =========================
+def create_query_embedding(query):
+    embedder = EmbeddingService(
+        model_name=EMBEDDING_MODEL,
+    )
 
-def create_query_embedding(query: str) -> list[float]:
+    embedding = embedder.embed_query(query)
 
-    print("\n[1/4] Загружаем BGE-M3...")
-
-    embedder = EmbeddingService(EMBEDDING_MODEL)
-
-    print("[2/4] Создаём embedding запроса...")
-
-    query_embedding = embedder.embed_query(query)
-
-    # BGE больше не нужен
     del embedder
-
-    print("[2/4] Выгружаем BGE-M3...")
-
     free_memory()
 
-    return query_embedding
+    return embedding
 
 
-# =========================
-# RERANKING
-# =========================
-
-def rerank_results(
-    query: str,
-    candidates: list[dict]
-) -> list[dict]:
-
-    print("\n[3/4] Загружаем CrossEncoder...")
-
+def rerank_results(query, candidates, top_n=5):
     reranker = Reranker()
-
-    print("[3/4] Выполняем reranking...")
 
     results = reranker.rerank(
         query=query,
         results=candidates,
-        top_n=FINAL_TOP_K
+        top_n=top_n,
     )
 
-    # CrossEncoder больше не нужен
     del reranker
-
-    print("[3/4] Выгружаем CrossEncoder...")
-
     free_memory()
 
     return results
 
 
-# =========================
-# LLM
-# =========================
-
-def generate_answer(
-    query: str,
-    results: list[dict]
-) -> str:
-
-    print("\n[4/4] Загружаем Qwen3...")
-
-    llm = LocalLLM()
-
-    print("[4/4] Генерируем ответ...")
-
-    answer = llm.answer(
-        query=query,
-        results=results
+def generate_answer(query, results):
+    llm = LocalLLM(
+        model_name=LLM_MODEL,
     )
 
-    # Qwen после ответа больше не нужен
-    del llm
+    return llm.answer(
+        query=query,
+        results=results,
+    )
 
-    free_memory()
-
-    return answer
-
-
-# =========================
-# FULL RAG
-# =========================
 
 def search(
-    query: str,
-    vector_top_k: int = VECTOR_TOP_K,
-    final_top_k: int = FINAL_TOP_K
-) -> tuple[str, list[dict]]:
+    query,
+    vector_top_k=VECTOR_TOP_K,
+    final_top_k=FINAL_TOP_K,
+    progress_callback=None,
+):
+    # ------------------------------------------------------
+    # 1
+    # ------------------------------------------------------
 
-    # -------------------------
-    # 1. BGE-M3
-    # -------------------------
+    progress(
+        progress_callback,
+        5,
+        "Принимаю вопрос и определяю, какую информацию нужно найти.",
+    )
+
+    # ------------------------------------------------------
+    # 2
+    # ------------------------------------------------------
+
+    progress(
+        progress_callback,
+        20,
+        "Ищу связанные фрагменты в корпоративных документах.",
+    )
 
     query_embedding = create_query_embedding(query)
 
-    # -------------------------
-    # 2. pgvector
-    # -------------------------
-
-    print("\n[2/4] Ищем документы в PostgreSQL...")
-
     candidates = vector_search(
         query_embedding=query_embedding,
-        top_k=vector_top_k
+        top_k=vector_top_k,
     )
 
-    # Embedding больше не нужен
-    del query_embedding
-
-    free_memory()
-
     if not candidates:
-        return (
-            "В предоставленных документах недостаточно информации для ответа.",
-            []
+        progress(
+            progress_callback,
+            100,
+            "В документах не найдено подходящей информации.",
         )
 
-    print(f"[2/4] Найдено кандидатов: {len(candidates)}")
+        return (
+            "В предоставленных документах недостаточно информации для ответа.",
+            [],
+        )
 
-    # -------------------------
-    # 3. CrossEncoder
-    # -------------------------
+    # ------------------------------------------------------
+    # 3
+    # ------------------------------------------------------
+
+    progress(
+        progress_callback,
+        50,
+        "Проверяю найденные фрагменты и выбираю наиболее подходящие.",
+    )
 
     results = rerank_results(
         query=query,
-        candidates=candidates
+        candidates=candidates,
+        top_n=final_top_k,
     )
 
-    # Кандидаты больше не нужны
-    del candidates
+    # ------------------------------------------------------
+    # 4
+    # ------------------------------------------------------
 
-    free_memory()
+    progress(
+        progress_callback,
+        70,
+        "Собираю найденные сведения и связываю их с источниками.",
+    )
 
-    print(f"[3/4] Отобрано лучших чанков: {len(results)}")
+    # ------------------------------------------------------
+    # 5
+    # ------------------------------------------------------
 
-    # -------------------------
-    # 4. Qwen
-    # -------------------------
+    progress(
+        progress_callback,
+        85,
+        "Формирую ответ на основе найденной информации.",
+    )
 
     answer = generate_answer(
         query=query,
-        results=results
+        results=results,
+    )
+
+    # ------------------------------------------------------
+    # 6
+    # ------------------------------------------------------
+
+    progress(
+        progress_callback,
+        95,
+        "Проверяю источники, которые использованы в ответе.",
+    )
+
+    progress(
+        progress_callback,
+        100,
+        "Готово.",
     )
 
     return answer, results
 
 
-# =========================
-# CONSOLE
-# =========================
-
 def main():
+    query = input("Введите запрос: ")
 
-    print("=" * 80)
-    print("LOCAL RAG")
-    print("=" * 80)
+    answer, results = search(query)
 
-    while True:
+    print("\nОтвет:")
+    print(answer)
 
-        query = input(
-            "\nВведите вопрос (или 'exit' для выхода): "
-        ).strip()
+    print("\nИсточники:")
 
-        if query.lower() == "exit":
-            break
+    for result in results:
+        filename = result.get(
+            "filename",
+            "Неизвестный файл",
+        )
 
-        if not query:
-            continue
+        page = result.get("page")
 
-        try:
+        if page is not None:
+            print(f"- {filename}, стр. {page}")
+        else:
+            print(f"- {filename}")
 
-            answer, results = search(query)
-
-            print()
-            print("=" * 80)
-            print("ОТВЕТ")
-            print("=" * 80)
-
-            print(answer)
-
-            print()
-            print("=" * 80)
-            print("ИСПОЛЬЗОВАННЫЕ ЧАНКИ")
-            print("=" * 80)
-
-            for i, result in enumerate(results, start=1):
-
-                print()
-                print(f"[{i}] {result['filename']}")
-
-                if result["page"] is not None:
-                    print(f"Страница: {result['page']}")
-
-                print(
-                    f"Vector score: "
-                    f"{result['vector_score']:.4f}"
-                )
-
-                print(
-                    f"Rerank score: "
-                    f"{result['rerank_score']:.4f}"
-                )
-
-                print("-" * 80)
-                print(result["content"])
-
-        except Exception as error:
-
-            print()
-            print("=" * 80)
-            print("ОШИБКА")
-            print("=" * 80)
-            print(error)
-            print("=" * 80)
-
-
-# =========================
-# ENTRY POINT
-# =========================
 
 if __name__ == "__main__":
     main()

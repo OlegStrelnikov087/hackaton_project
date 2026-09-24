@@ -3,6 +3,7 @@ import requests
 
 MODEL_NAME = "qwen3:4b-instruct"
 OLLAMA_URL = "http://localhost:11434/api/generate"
+CONTEXT_SIZE = 4096
 
 
 class LocalLLM:
@@ -13,10 +14,21 @@ class LocalLLM:
     def build_context(self, results: list[dict]) -> str:
         context_parts = []
 
-        for i, result in enumerate(results, start=1):
-            filename = result.get("filename", "Неизвестный файл")
+        for index, result in enumerate(
+            results,
+            start=1,
+        ):
+            filename = result.get(
+                "filename",
+                "Неизвестный файл",
+            )
+
             page = result.get("page")
-            content = result.get("content", "")
+
+            content = result.get(
+                "content",
+                "",
+            )
 
             if page is not None:
                 source = f"{filename}, стр. {page}"
@@ -24,39 +36,44 @@ class LocalLLM:
                 source = filename
 
             context_parts.append(
-                f"[Источник {i}: {source}]\n{content}"
+                f"[Источник {index}: {source}]\n{content}"
             )
 
         return "\n\n".join(context_parts)
 
-    def answer(self, query: str, results: list[dict]) -> str:
+    def answer(
+        self,
+        query: str,
+        results: list[dict],
+    ) -> str:
 
         context = self.build_context(results)
 
         prompt = f"""
-Ты — корпоративный ассистент, работающий с внутренними документами.
+Ты — корпоративный ассистент,
+работающий с внутренними корпоративными документами.
 
-Твоя задача — отвечать на вопрос пользователя только на основании
+Отвечай на вопрос пользователя только на основании
 предоставленного контекста.
 
-ПРАВИЛА:
-
-1. Отвечай только на основании предоставленного контекста.
-2. Не придумывай факты, которых нет в контексте.
-3. Не используй внешние знания и интернет.
+Правила:
+1. Не придумывай факты.
+2. Не используй интернет.
+3. Не используй внешние знания.
 4. Если информации недостаточно, напиши:
 "В предоставленных документах недостаточно информации для ответа."
 5. Отвечай на русском языке.
-6. Отвечай кратко, точно и по существу.
+6. Отвечай кратко и по существу.
 7. Для важных утверждений указывай источник в формате [Источник N].
 8. В конце добавь раздел "Источники".
-9. В разделе "Источники" указывай только использованные источники.
+9. Указывай только реально использованные источники.
+10. Не выдумывай страницы или номера источников.
 
-КОНТЕКСТ:
+Контекст:
 
 {context}
 
-ВОПРОС:
+Вопрос:
 
 {query}
 
@@ -69,19 +86,51 @@ class LocalLLM:
             "stream": False,
             "options": {
                 "temperature": 0.2,
-                "num_ctx": 4096,
-                "num_predict": 512
-            }
+                "num_ctx": CONTEXT_SIZE,
+                "num_predict": 512,
+            },
         }
 
-        response = requests.post(
-            OLLAMA_URL,
-            json=payload,
-            timeout=300
-        )
+        try:
+            response = requests.post(
+                OLLAMA_URL,
+                json=payload,
+                timeout=300,
+            )
 
-        response.raise_for_status()
+            response.raise_for_status()
 
-        data = response.json()
+            data = response.json()
 
-        return data["response"]
+            if "response" not in data:
+                raise RuntimeError(
+                    "Ollama не вернул поле 'response'."
+                )
+
+            return data["response"]
+
+        except requests.exceptions.ConnectionError as error:
+            raise RuntimeError(
+                "Не удалось подключиться к Ollama. "
+                "Убедитесь, что Ollama запущен."
+            ) from error
+
+        except requests.exceptions.Timeout as error:
+            raise RuntimeError(
+                "Ollama слишком долго генерирует ответ."
+            ) from error
+
+        except requests.exceptions.HTTPError as error:
+            raise RuntimeError(
+                f"Ollama вернул HTTP ошибку: {response.status_code}"
+            ) from error
+
+        except requests.exceptions.RequestException as error:
+            raise RuntimeError(
+                f"Ошибка HTTP при обращении к Ollama: {error}"
+            ) from error
+
+        except Exception as error:
+            raise RuntimeError(
+                f"Ошибка локальной LLM: {error}"
+            ) from error
