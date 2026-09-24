@@ -3,6 +3,7 @@ import re
 import json
 from pathlib import Path
 import pymupdf
+import docx  # Для работы с DOCX
 
 
 # ============================================================
@@ -12,7 +13,7 @@ import pymupdf
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 150
 
-# Если на странице меньше символов — запускаем OCR
+# Если на странице PDF меньше символов — запускаем OCR
 MIN_TEXT_LENGTH = 30
 
 
@@ -52,12 +53,12 @@ def ocr_page(page):
 
 
 # ============================================================
-# 2. Обработка Таблиц
+# 2. Обработка Таблиц в PDF
 # ============================================================
 
 def table_to_text(table_data):
     """
-    Преобразует структуру таблицы в связный текст.
+    Преобразует структуру таблицы PDF в связный текст.
     """
     if not table_data:
         return ""
@@ -124,7 +125,7 @@ def extract_tables(page):
                 })
 
     except Exception as e:
-        print(f"[WARNING] Не удалось извлечь таблицу: {e}")
+        print(f"[WARNING] Не удалось извлечь таблицу из PDF: {e}")
 
     return tables_result
 
@@ -135,8 +136,7 @@ def extract_tables(page):
 
 def clean_text(text):
     """
-    Чистит неразрывные пробелы (\xa0), переносы строк и спецсимволы,
-    которые вызывают рваные слова в PDF.
+    Чистит неразрывные пробелы (\xa0), переносы строк и спецсимволы.
     """
     if text is None:
         return ""
@@ -168,11 +168,7 @@ def clean_text(text):
 
 def _find_best_split_point(text, max_pos):
     """
-    Ищет идеальное место для разреза текста слева от max_pos:
-    1. Граница абзаца (\n\n)
-    2. Граница строки (\n)
-    3. Конец предложения (. ! ?)
-    4. Обычный пробел (гарантия не разрезать слово)
+    Ищет идеальное место для разреза текста слева от max_pos.
     """
     if max_pos >= len(text):
         return len(text)
@@ -194,12 +190,11 @@ def _find_best_split_point(text, max_pos):
     if sentence_match:
         return sentence_match[-1].end()
 
-    # 4. Фолбэк: ищем любой пробельный символ (слово НЕ режется)
+    # 4. Фолбэк: ищем любой пробельный символ
     space_match = list(re.finditer(r'\s+', search_window))
     if space_match:
         return space_match[-1].start()
 
-    # Если пробелов вообще нет в окне (одно гигантское слово)
     return max_pos
 
 
@@ -220,17 +215,14 @@ def split_text_by_context(
     text_len = len(text)
 
     while start < text_len:
-        # Если остаток текста меньше размера чанка — забираем целиком
         if start + chunk_size >= text_len:
             chunk = text[start:].strip()
             if chunk:
                 chunks.append(chunk)
             break
 
-        # Ищем наилучшую контекстную точку разрыва в пределах chunk_size
         end = start + _find_best_split_point(text[start:], chunk_size)
 
-        # Страховка от зацикливания
         if end <= start:
             end = start + chunk_size
 
@@ -238,12 +230,9 @@ def split_text_by_context(
         if chunk:
             chunks.append(chunk)
 
-        # Рассчитываем старт следующего чанка с учетом overlap
         new_start = end - chunk_overlap
 
         if new_start > start and new_start < text_len:
-            # Корректируем начало overlap-чанка по пробелу ВПРАВО,
-            # чтобы не отрезать половину слова в НАЧАЛЕ чанка
             match_space = re.search(r'\s+', text[new_start:end])
             if match_space:
                 start = new_start + match_space.end()
@@ -256,7 +245,7 @@ def split_text_by_context(
 
 
 # ============================================================
-# 5. Создание чанков
+# 5. Создание структурализованных чанков
 # ============================================================
 
 def create_chunks_from_content(
@@ -271,7 +260,6 @@ def create_chunks_from_content(
     if not content:
         return chunks
 
-    # Запускаем контекстное чанкование
     text_chunks = split_text_by_context(content)
 
     for chunk in text_chunks:
@@ -301,14 +289,13 @@ def process_pdf(
         page_number = page_number + 1
 
         print(
-            f"Обработка {filename}, "
+            f"Обработка PDF [{filename}], "
             f"страница {page_number}/{len(pdf)}"
         )
 
         text = page.get_text()
         text = clean_text(text)
 
-        # Если текста слишком мало — пробуем OCR
         if len(text) < MIN_TEXT_LENGTH:
             print("  → мало текста, запускаем OCR")
             ocr_text = ocr_page(page)
@@ -334,7 +321,6 @@ def process_pdf(
                 )
             )
 
-        # Извлечение таблиц
         tables = extract_tables(page)
         for table in tables:
             table_chunks = create_chunks_from_content(
@@ -350,7 +336,63 @@ def process_pdf(
 
 
 # ============================================================
-# 7. Обработка TXT
+# 7. Обработка DOCX документов
+# ============================================================
+
+def process_docx(
+    file_path,
+    document_id,
+    filename
+):
+    """
+    Извлекает текст из абзацев и таблиц DOCX-файла.
+    """
+    chunks = []
+    try:
+        doc = docx.Document(file_path)
+    except Exception as e:
+        print(f"[ERROR] Не удалось открыть DOCX {filename}: {e}")
+        return chunks
+
+    extracted_lines = []
+
+    # 1. Извлекаем обычный текст абзацев
+    for p in doc.paragraphs:
+        if p.text and p.text.strip():
+            extracted_lines.append(p.text.strip())
+
+    # 2. Извлекаем текст из всех таблиц
+    for table in doc.tables:
+        for row in table.rows:
+            row_cells = [
+                cell.text.strip()
+                for cell in row.cells
+                if cell.text and cell.text.strip()
+            ]
+            if row_cells:
+                # Объединяем ячейки строки через разделитель
+                extracted_lines.append(" | ".join(row_cells))
+
+    full_text = "\n".join(extracted_lines)
+    full_text = clean_text(full_text)
+
+    if not full_text:
+        return chunks
+
+    chunks.extend(
+        create_chunks_from_content(
+            document_id=document_id,
+            filename=filename,
+            page=None,
+            content=full_text
+        )
+    )
+
+    return chunks
+
+
+# ============================================================
+# 8. Обработка Текстовых документов (TXT, MD, LOG и т.д.)
 # ============================================================
 
 def process_txt(
@@ -360,12 +402,16 @@ def process_txt(
 ):
     chunks = []
 
-    with open(
-        file_path,
-        "r",
-        encoding="utf-8"
-    ) as f:
-        text = f.read()
+    encodings = ["utf-8", "utf-8-sig", "cp1251", "latin-1"]
+    text = ""
+
+    for enc in encodings:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                text = f.read()
+            break
+        except UnicodeDecodeError:
+            continue
 
     text = clean_text(text)
 
@@ -385,77 +431,98 @@ def process_txt(
 
 
 # ============================================================
-# 8. Загрузка всех документов
+# 9. Загрузка ВСЕХ документов из папки (и подпапок)
 # ============================================================
 
 def load_documents(folder_path):
-    chunks = []
+    all_chunks = []
     document_id = 1
 
-    for filename in sorted(os.listdir(folder_path)):
-        file_path = os.path.join(
-            folder_path,
-            filename
-        )
+    all_files = []
+    for root, _, files in os.walk(folder_path):
+        for filename in sorted(files):
+            file_path = os.path.join(root, filename)
+            all_files.append((file_path, filename))
 
-        if not os.path.isfile(file_path):
-            continue
+    print(f"Найдено файлов для обработки: {len(all_files)}")
 
-        if filename.lower().endswith(".pdf"):
-            print(f"\nPDF: {filename}")
+    for file_path, filename in all_files:
+        ext = os.path.splitext(filename)[1].lower()
+
+        # PDF файлы
+        if ext == ".pdf":
+            print(f"\n[Doc ID {document_id}] PDF: {filename}")
             pdf_chunks = process_pdf(
                 file_path=file_path,
                 document_id=document_id,
                 filename=filename
             )
-            chunks.extend(pdf_chunks)
+            all_chunks.extend(pdf_chunks)
             document_id += 1
 
-        elif filename.lower().endswith(".txt"):
-            print(f"\nTXT: {filename}")
+        # DOCX файлы
+        elif ext == ".docx":
+            print(f"\n[Doc ID {document_id}] DOCX: {filename}")
+            docx_chunks = process_docx(
+                file_path=file_path,
+                document_id=document_id,
+                filename=filename
+            )
+            all_chunks.extend(docx_chunks)
+            document_id += 1
+
+        # Текстовые документы
+        elif ext in [".txt", ".md", ".json", ".log", ".csv", ".tsv"]:
+            print(f"\n[Doc ID {document_id}] TXT: {filename}")
             txt_chunks = process_txt(
                 file_path=file_path,
                 document_id=document_id,
                 filename=filename
             )
-            chunks.extend(txt_chunks)
+            all_chunks.extend(txt_chunks)
             document_id += 1
 
-    return chunks
+        else:
+            print(f"[SKIP] Неподдерживаемый формат: {filename}")
+
+    return all_chunks
 
 
 # ============================================================
-# 9. MAIN
+# 10. MAIN
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-documents_dir = BASE_DIR / "documents"
-output_dir = BASE_DIR / "output"
+if __name__ == "__main__":
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    documents_dir = BASE_DIR / "documents"
+    output_dir = BASE_DIR / "output"
 
-output_dir.mkdir(exist_ok=True)
-output_file = output_dir / "chunks.json"
+    output_dir.mkdir(exist_ok=True)
+    output_file = output_dir / "chunks.json"
 
-if not documents_dir.exists():
-    raise FileNotFoundError(
-        f"Папка с документами не найдена: {documents_dir}"
-    )
+    if not documents_dir.exists():
+        raise FileNotFoundError(
+            f"Папка с документами не найдена: {documents_dir}"
+        )
 
-chunks = load_documents(documents_dir)
+    # Загружаем и агрегируем чанки со всех файлов
+    all_chunks = load_documents(documents_dir)
 
-with open(
-    output_file,
-    "w",
-    encoding="utf-8"
-) as f:
-    json.dump(
-        chunks,
-        f,
-        ensure_ascii=False,
-        indent=4,
-        allow_nan=False
-    )
+    # Записываем единый список чанков в JSON
+    with open(
+        output_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
+        json.dump(
+            all_chunks,
+            f,
+            ensure_ascii=False,
+            indent=4,
+            allow_nan=False
+        )
 
-print("\n" + "=" * 50)
-print(f"JSON сохранён: {output_file}")
-print(f"Всего чанков: {len(chunks)}")
-print("=" * 50)
+    print("\n" + "=" * 50)
+    print(f"JSON сохранён: {output_file}")
+    print(f"Всего чанков сведено в один список: {len(all_chunks)}")
+    print("=" * 50)
