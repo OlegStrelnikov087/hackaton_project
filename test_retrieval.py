@@ -1,71 +1,188 @@
+import json
+from pathlib import Path
+
+import numpy as np
+
 from backend.retrieval.embedding import EmbeddingService
-
-import psycopg
-from pgvector import Vector
-from pgvector.psycopg import register_vector
+from backend.retrieval.reranker import Reranker
 
 
-DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/rag"
+INPUT_FILE = Path(
+    "backend/output/embedded_chunks.json"
+)
 
-embedder = EmbeddingService("BAAI/bge-m3")
+VECTOR_TOP_K = 30
+FINAL_TOP_K = 5
 
 
-def search(query: str, top_k: int = 5):
-    # Превращаем запрос пользователя в embedding
-    query_embedding = embedder.embed_query(query)
-    query_vector = Vector(query_embedding)
+print("Loading embedding model...")
 
-    # Подключаемся к PostgreSQL
-    with psycopg.connect(DATABASE_URL) as conn:
-        register_vector(conn)
+embedder = EmbeddingService(
+    "BAAI/bge-m3"
+)
 
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    document_id,
-                    filename,
-                    page,
-                    content,
-                    1 - (embedding <=> %s) AS similarity
-                FROM chunks
-                ORDER BY embedding <=> %s
-                LIMIT %s
-                """,
-                (
-                    query_vector,
-                    query_vector,
-                    top_k
-                )
-            )
+print("Loading reranker...")
 
-            rows = cursor.fetchall()
+reranker = Reranker()
 
-    return [
-        {
-            "id": row[0],
-            "document_id": row[1],
-            "filename": row[2],
-            "page": row[3],
-            "content": row[4],
-            "similarity": float(row[5])
-        }
-        for row in rows
-    ]
+print("Models loaded.")
+
+
+def load_chunks():
+    with open(
+        INPUT_FILE,
+        "r",
+        encoding="utf-8"
+    ) as file:
+        return json.load(file)
+
+
+def cosine_similarity(a, b):
+    a = np.asarray(
+        a,
+        dtype=np.float32
+    )
+
+    b = np.asarray(
+        b,
+        dtype=np.float32
+    )
+
+    return np.dot(a, b) / (
+        np.linalg.norm(a)
+        * np.linalg.norm(b)
+    )
+
+
+def vector_search(
+    query_embedding,
+    chunks,
+    top_k
+):
+    results = []
+
+    for chunk in chunks:
+
+        similarity = cosine_similarity(
+            query_embedding,
+            chunk["embedding"]
+        )
+
+        results.append({
+            "document_id": chunk["document_id"],
+            "filename": chunk["filename"],
+            "page": chunk.get("page"),
+            "content": chunk["content"],
+            "vector_score": float(similarity)
+        })
+
+    results.sort(
+        key=lambda x: x["vector_score"],
+        reverse=True
+    )
+
+    return results[:top_k]
+
+
+def search(
+    query: str,
+    vector_top_k: int = VECTOR_TOP_K,
+    final_top_k: int = FINAL_TOP_K
+):
+
+    chunks = load_chunks()
+
+    print(
+        f"Loaded chunks: {len(chunks)}"
+    )
+
+    # ---------------------------
+    # 1. Embedding запроса
+    # ---------------------------
+
+    print(
+        "Creating query embedding..."
+    )
+
+    query_embedding = embedder.embed_query(
+        query
+    )
+
+    # ---------------------------
+    # 2. Vector search
+    # ---------------------------
+
+    print(
+        f"Vector search: Top-{vector_top_k}"
+    )
+
+    candidates = vector_search(
+        query_embedding,
+        chunks,
+        vector_top_k
+    )
+
+    # ---------------------------
+    # 3. Reranking
+    # ---------------------------
+
+    print(
+        f"Reranking {len(candidates)} candidates..."
+    )
+
+    results = reranker.rerank(
+        query,
+        candidates,
+        top_n=final_top_k
+    )
+
+    return results
 
 
 if __name__ == "__main__":
-    query = input("Введите запрос: ")
 
-    results = search(query, top_k=5)
+    query = input(
+        "Введите запрос: "
+    )
 
-    print("\nРезультаты:\n")
+    results = search(query)
 
-    for i, result in enumerate(results, 1):
-        print(f"--- #{i} ---")
-        print(f"Файл: {result['filename']}")
-        print(f"Страница: {result['page']}")
-        print(f"Similarity: {result['similarity']:.4f}")
-        print(f"Текст: {result['content']}")
+    print(
+        "\nFINAL RESULTS\n"
+    )
+
+    for i, result in enumerate(
+        results,
+        1
+    ):
+
+        print(
+            f"--- #{i} ---"
+        )
+
+        print(
+            "File:",
+            result["filename"]
+        )
+
+        print(
+            "Page:",
+            result["page"]
+        )
+
+        print(
+            "Vector score:",
+            f"{result['vector_score']:.4f}"
+        )
+
+        print(
+            "Rerank score:",
+            f"{result['rerank_score']:.4f}"
+        )
+
+        print(
+            "Content:",
+            result["content"][:500]
+        )
+
         print()

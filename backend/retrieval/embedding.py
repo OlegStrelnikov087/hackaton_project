@@ -1,10 +1,14 @@
+import os
+os.environ["HF_HOME"] = r"D:\hf_cache"
+os.environ["HF_HUB_CACHE"] = r"D:\hf_cache\hub"
+#os.environ["HF_HUB_OFFLINE"] = "1"
+
 import json
 from pathlib import Path
 
 import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
-
 
 MODEL_NAME = "BAAI/bge-m3"
 
