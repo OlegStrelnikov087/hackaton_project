@@ -1,6 +1,6 @@
 import os
-os.environ["HF_HOME"] = r"D:\hf_cache"
-os.environ["HF_HUB_CACHE"] = r"D:\hf_cache\hub"
+os.environ["HF_HOME"] = r"D:\\hf_cache"
+os.environ["HF_HUB_CACHE"] = r"D:\\hf_cache\\hub"
 #os.environ["HF_HUB_OFFLINE"] = "1"
 
 import json
@@ -21,7 +21,7 @@ BATCH_SIZE = 16
 class EmbeddingService:
     def __init__(self, model_name: str = MODEL_NAME):
         # Используем GPU, если CUDA доступна
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cpu"
 
         print(f"Device: {self.device}")
 
