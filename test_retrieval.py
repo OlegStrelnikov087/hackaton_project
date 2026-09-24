@@ -1,14 +1,13 @@
-import json
-from pathlib import Path
-
-import numpy as np
+import psycopg
+from pgvector import Vector
+from pgvector.psycopg import register_vector
 
 from backend.retrieval.embedding import EmbeddingService
 from backend.retrieval.reranker import Reranker
 
 
-INPUT_FILE = Path(
-    "backend/output/embedded_chunks.json"
+DATABASE_URL = (
+    "postgresql://postgres:postgres@127.0.0.1:5432/rag"
 )
 
 VECTOR_TOP_K = 30
@@ -28,103 +27,80 @@ reranker = Reranker()
 print("Models loaded.")
 
 
-def load_chunks():
-    with open(
-        INPUT_FILE,
-        "r",
-        encoding="utf-8"
-    ) as file:
-        return json.load(file)
-
-
-def cosine_similarity(a, b):
-    a = np.asarray(
-        a,
-        dtype=np.float32
-    )
-
-    b = np.asarray(
-        b,
-        dtype=np.float32
-    )
-
-    return np.dot(a, b) / (
-        np.linalg.norm(a)
-        * np.linalg.norm(b)
-    )
-
-
 def vector_search(
-    query_embedding,
-    chunks,
-    top_k
-):
+    query_embedding: list[float],
+    top_k: int = VECTOR_TOP_K
+) -> list[dict]:
+
+    query_vector = Vector(query_embedding)
+
+    with psycopg.connect(DATABASE_URL) as conn:
+        register_vector(conn)
+
+        with conn.cursor() as cursor:
+
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    document_id,
+                    filename,
+                    page,
+                    content,
+                    1 - (embedding <=> %s) AS similarity
+                FROM chunks
+                ORDER BY embedding <=> %s
+                LIMIT %s
+                """,
+                (
+                    query_vector,
+                    query_vector,
+                    top_k
+                )
+            )
+
+            rows = cursor.fetchall()
+
     results = []
 
-    for chunk in chunks:
-
-        similarity = cosine_similarity(
-            query_embedding,
-            chunk["embedding"]
-        )
-
+    for row in rows:
         results.append({
-            "document_id": chunk["document_id"],
-            "filename": chunk["filename"],
-            "page": chunk.get("page"),
-            "content": chunk["content"],
-            "vector_score": float(similarity)
+            "id": row[0],
+            "document_id": row[1],
+            "filename": row[2],
+            "page": row[3],
+            "content": row[4],
+            "vector_score": float(row[5])
         })
 
-    results.sort(
-        key=lambda x: x["vector_score"],
-        reverse=True
-    )
-
-    return results[:top_k]
+    return results
 
 
 def search(
     query: str,
     vector_top_k: int = VECTOR_TOP_K,
     final_top_k: int = FINAL_TOP_K
-):
+) -> list[dict]:
 
-    chunks = load_chunks()
-
-    print(
-        f"Loaded chunks: {len(chunks)}"
-    )
-
-    # ---------------------------
-    # 1. Embedding запроса
-    # ---------------------------
-
-    print(
-        "Creating query embedding..."
-    )
+    print("\nCreating query embedding...")
 
     query_embedding = embedder.embed_query(
         query
     )
 
-    # ---------------------------
-    # 2. Vector search
-    # ---------------------------
-
     print(
-        f"Vector search: Top-{vector_top_k}"
+        f"Searching PostgreSQL with pgvector: "
+        f"Top-{vector_top_k}"
     )
 
     candidates = vector_search(
         query_embedding,
-        chunks,
         vector_top_k
     )
 
-    # ---------------------------
-    # 3. Reranking
-    # ---------------------------
+    print(
+        f"Found {len(candidates)} candidates"
+    )
 
     print(
         f"Reranking {len(candidates)} candidates..."
@@ -145,15 +121,17 @@ if __name__ == "__main__":
         "Введите запрос: "
     )
 
-    results = search(query)
-
-    print(
-        "\nFINAL RESULTS\n"
+    results = search(
+        query,
+        vector_top_k=30,
+        final_top_k=5
     )
+
+    print("\nFINAL RESULTS\n")
 
     for i, result in enumerate(
         results,
-        1
+        start=1
     ):
 
         print(
